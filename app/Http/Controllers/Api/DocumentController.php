@@ -13,6 +13,12 @@ use Illuminate\Http\Request;
  * een Klant-model/KlantScope (ADR-001) — dat is een aparte, grotere vervolgstap. Wél al server-
  * side, nooit uit de request zelf, consistent met de niet-onderhandelbare eis in CLAUDE.md en
  * skill `multi-tenancy`.
+ *
+ * Conventie voor toekomstige by-ID-endpoints op deze resource (skill `api-design`): een document
+ * van een andere gebruiker/klant moet altijd `404` teruggeven, nooit `403` — het bestaan van een
+ * ID die niet van de aanvrager is, mag niet extern waarneembaar zijn. Er bestaat nu nog geen
+ * `GET /documenten/{id}`, dus dit is nog niet van toepassing, maar wel al vastgelegd voor als
+ * die er komt.
  */
 class DocumentController extends Controller
 {
