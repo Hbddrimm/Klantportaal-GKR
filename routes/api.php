@@ -25,4 +25,9 @@ Route::get('/branding', [BrandingController::class, 'show'])->middleware('thrott
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/documenten', [DocumentController::class, 'index']);
+
+    // Huisstijl wijzigen: alleen admins (middleware + BrandingPolicy), ADR-010.
+    Route::middleware('admin')->group(function () {
+        Route::put('/branding', [BrandingController::class, 'update']);
+    });
 });

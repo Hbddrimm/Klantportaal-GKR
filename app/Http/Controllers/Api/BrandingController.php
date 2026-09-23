@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Api\UpdateBrandingRequest;
 use App\Http\Resources\BrandingResource;
 use App\Models\Branding;
 use Illuminate\Http\JsonResponse;
@@ -20,6 +21,18 @@ class BrandingController extends Controller
     public function show(): JsonResponse
     {
         return $this->respond(Branding::current());
+    }
+
+    /**
+     * Volledige vervanging van naam en kleuren; het beheerscherm stuurt altijd het hele
+     * formulier. Autorisatie en validatie (incl. contrast) zitten in UpdateBrandingRequest.
+     */
+    public function update(UpdateBrandingRequest $request): JsonResponse
+    {
+        $branding = Branding::current();
+        $branding->fill($request->validated())->save();
+
+        return $this->respond($branding);
     }
 
     /**
