@@ -26,6 +26,10 @@ class AuthController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
+                // De app bepaalt hiermee welke tabs en beheerschermen zichtbaar zijn. Autorisatie
+                // blijft server-side (admin-middleware); dit is alleen UI-informatie. Expliciete
+                // cast omdat SQLite 0/1 teruggeeft.
+                'is_admin' => (bool) $user->is_admin,
             ],
         ]);
     }

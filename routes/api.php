@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\BrandingController;
 use App\Http\Controllers\Api\DocumentController;
 use Illuminate\Support\Facades\Route;
 
@@ -16,7 +17,19 @@ use Illuminate\Support\Facades\Route;
  */
 Route::post('/login', [AuthController::class, 'login']);
 
+// Publiek: het inlogscherm van de app toont de huisstijl vóór authenticatie (ADR-010). Alleen
+// publieke huisstijl in de response (BrandingResource). Eigen throttle, omdat dit endpoint
+// zonder token bereikbaar is.
+Route::get('/branding', [BrandingController::class, 'show'])->middleware('throttle:60,1');
+
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/documenten', [DocumentController::class, 'index']);
+
+    // Huisstijl wijzigen: alleen admins (middleware + BrandingPolicy), ADR-010.
+    Route::middleware('admin')->group(function () {
+        Route::put('/branding', [BrandingController::class, 'update']);
+        Route::post('/branding/logo', [BrandingController::class, 'storeLogo']);
+        Route::delete('/branding/logo', [BrandingController::class, 'destroyLogo']);
+    });
 });
