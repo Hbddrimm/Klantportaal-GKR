@@ -29,7 +29,18 @@ class DocumentApiTest extends TestCase
             'password' => 'secret123',
         ]);
 
-        $response->assertOk()->assertJsonStructure(['token', 'user' => ['id', 'name', 'email']]);
+        $response->assertOk()
+            ->assertJsonStructure(['token', 'user' => ['id', 'name', 'email', 'is_admin']])
+            ->assertJsonPath('user.is_admin', false);
+    }
+
+    public function test_login_response_reports_admin_role(): void
+    {
+        $admin = User::factory()->admin()->create(['password' => bcrypt('secret123')]);
+
+        $this->postJson('/api/login', ['email' => $admin->email, 'password' => 'secret123'])
+            ->assertOk()
+            ->assertJsonPath('user.is_admin', true);
     }
 
     public function test_login_with_incorrect_credentials_is_rejected(): void
