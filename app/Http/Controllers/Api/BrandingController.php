@@ -4,9 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\UpdateBrandingRequest;
+use App\Http\Requests\Api\UploadBrandingLogoRequest;
 use App\Http\Resources\BrandingResource;
 use App\Models\Branding;
+use App\Services\BrandingLogoService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Gate;
 
 /**
  * White-label branding voor de installatie (FR-02 / NFR-03, ADR-010).
@@ -33,6 +36,26 @@ class BrandingController extends Controller
         $branding->fill($request->validated())->save();
 
         return $this->respond($branding);
+    }
+
+    /**
+     * Apart endpoint (multipart, POST): PHP parseert geen bestanden in een PUT-body, en een
+     * kleurwijziging hoeft zo nooit een logo opnieuw te versturen.
+     */
+    public function storeLogo(UploadBrandingLogoRequest $request, BrandingLogoService $logos): JsonResponse
+    {
+        return $this->respond($logos->replace(Branding::current(), $request->file('logo')));
+    }
+
+    /**
+     * Terug naar "geen logo" — de default.
+     */
+    public function destroyLogo(BrandingLogoService $logos): JsonResponse
+    {
+        $branding = Branding::current();
+        Gate::authorize('update', $branding);
+
+        return $this->respond($logos->remove($branding));
     }
 
     /**

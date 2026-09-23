@@ -29,5 +29,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Huisstijl wijzigen: alleen admins (middleware + BrandingPolicy), ADR-010.
     Route::middleware('admin')->group(function () {
         Route::put('/branding', [BrandingController::class, 'update']);
+        Route::post('/branding/logo', [BrandingController::class, 'storeLogo']);
+        Route::delete('/branding/logo', [BrandingController::class, 'destroyLogo']);
     });
 });

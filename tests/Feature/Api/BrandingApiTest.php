@@ -5,6 +5,8 @@ namespace Tests\Feature\Api;
 use App\Models\Branding;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -217,5 +219,110 @@ class BrandingApiTest extends TestCase
             ->assertStatus(403); // expliciet 403, geen 302-redirect naar HTML
 
         $this->assertSame('Origineel', $existing->fresh()->organization_name);
+    }
+
+    // --- Logo ----------------------------------------------------------------------------------
+
+    public function test_admin_can_upload_a_logo_to_a_server_chosen_path(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs(User::factory()->admin()->create());
+
+        $response = $this->post('/api/branding/logo', [
+            'logo' => UploadedFile::fake()->image('mijn logo.png', 512, 512),
+        ], ['Accept' => 'application/json'])->assertOk();
+
+        $path = $response->json('logo_path');
+        $this->assertMatchesRegularExpression('#^/storage/branding/default/[A-Za-z0-9]{40}\.png$#', $path);
+        Storage::disk('public')->assertExists(Branding::current()->logo_path);
+        $this->assertStringNotContainsString('mijn logo', $path, 'Nooit de bestandsnaam van de client.');
+
+        // Naam en kleuren blijven op de defaults: een logo-upload raakt alleen het logo.
+        $response->assertJson(['organization_name' => 'Klantportaal', 'primary_color' => '#011936']);
+    }
+
+    public function test_replacing_the_logo_changes_its_url_and_removes_the_old_file(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs(User::factory()->admin()->create());
+
+        $this->post('/api/branding/logo', ['logo' => UploadedFile::fake()->image('a.png', 256, 256)], ['Accept' => 'application/json'])->assertOk();
+        $first = Branding::current()->logo_path;
+
+        $this->post('/api/branding/logo', ['logo' => UploadedFile::fake()->image('b.jpg', 256, 256)], ['Accept' => 'application/json'])->assertOk();
+        $second = Branding::current()->logo_path;
+
+        $this->assertNotSame($first, $second, 'Een nieuwe URL laat client-caches vanzelf invalideren.');
+        Storage::disk('public')->assertMissing($first);
+        Storage::disk('public')->assertExists($second);
+        $this->getJson('/api/branding')->assertJsonPath('logo_path', '/storage/'.$second);
+    }
+
+    public function test_admin_can_remove_the_logo(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $this->post('/api/branding/logo', ['logo' => UploadedFile::fake()->image('a.png', 256, 256)], ['Accept' => 'application/json'])->assertOk();
+        $path = Branding::current()->logo_path;
+
+        $this->deleteJson('/api/branding/logo')->assertOk()->assertJsonPath('logo_path', null);
+
+        Storage::disk('public')->assertMissing($path);
+    }
+
+    /**
+     * @return array<string, array{0: \Closure(): UploadedFile}>
+     */
+    public static function invalidLogos(): array
+    {
+        return [
+            'svg' => [fn () => UploadedFile::fake()->create('logo.svg', 4, 'image/svg+xml')],
+            'svg met script vermomd als png' => [fn () => UploadedFile::fake()->createWithContent(
+                'logo.png',
+                '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+            )],
+            'tekstbestand als png' => [fn () => UploadedFile::fake()->create('logo.png', 10, 'text/plain')],
+            'pdf' => [fn () => UploadedFile::fake()->create('logo.pdf', 10, 'application/pdf')],
+            'te groot in pixels' => [fn () => UploadedFile::fake()->image('logo.png', 2400, 400)],
+            'te klein in pixels' => [fn () => UploadedFile::fake()->image('logo.png', 32, 32)],
+            'te groot in bytes' => [fn () => UploadedFile::fake()->image('logo.png', 512, 512)->size(3000)],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidLogos')]
+    public function test_invalid_logo_is_rejected_and_nothing_is_stored(\Closure $makeFile): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs(User::factory()->admin()->create());
+
+        $this->post('/api/branding/logo', ['logo' => $makeFile()], ['Accept' => 'application/json'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['logo']);
+
+        $this->assertSame([], Storage::disk('public')->allFiles());
+        $this->assertSame(0, Branding::count());
+    }
+
+    public function test_non_admin_cannot_upload_or_remove_a_logo(): void
+    {
+        Storage::fake('public');
+        $branding = Branding::factory()->create();
+        $branding->logo_path = UploadedFile::fake()->image('a.png', 256, 256)->store('branding/default', 'public');
+        $branding->save();
+
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->post('/api/branding/logo', ['logo' => UploadedFile::fake()->image('b.png', 256, 256)], ['Accept' => 'application/json'])
+            ->assertStatus(403);
+        $this->deleteJson('/api/branding/logo')->assertStatus(403);
+
+        $this->assertCount(1, Storage::disk('public')->allFiles());
+        Storage::disk('public')->assertExists($branding->fresh()->logo_path);
+    }
+
+    public function test_logo_endpoints_require_a_token(): void
+    {
+        $this->postJson('/api/branding/logo')->assertUnauthorized();
+        $this->deleteJson('/api/branding/logo')->assertUnauthorized();
     }
 }
