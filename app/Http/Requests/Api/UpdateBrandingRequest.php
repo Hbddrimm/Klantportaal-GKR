@@ -52,9 +52,21 @@ class UpdateBrandingRequest extends FormRequest
         ];
     }
 
+    /** Gewone taal, zonder verhoudingen of normcodes; dezelfde teksten als de iOS-app. */
+    public const PRIMARY_TOO_LIGHT = 'Witte tekst is slecht leesbaar op deze kleur. Kies een donkerdere primaire kleur.';
+
+    public const ACCENT_FADES_ON_WHITE = 'Het accent valt bijna weg op een witte achtergrond. Kies een donkerdere accentkleur.';
+
+    public const ACCENT_NEEDS_LIGHTER = 'Het accent valt weg tegen de primaire kleur. Kies een lichtere accentkleur.';
+
+    public const ACCENT_NEEDS_DARKER = 'Het accent valt weg tegen de primaire kleur. Kies een donkerdere accentkleur.';
+
+    public const NO_ACCENT_POSSIBLE = 'Bij deze primaire kleur valt elk accent weg. Maak eerst de primaire kleur donkerder.';
+
     /**
-     * Contrastregels (WCAG 2.2) over twee velden tegelijk. Afwijzen, niet stil corrigeren:
-     * een automatisch aangepaste kleur is een huisstijl die niemand koos.
+     * Contrastregels (WCAG 2.2, ADR-010) over twee velden tegelijk. Afwijzen, niet stil
+     * corrigeren: een automatisch aangepaste kleur is een huisstijl die niemand koos. De melding
+     * zegt wat er misgaat en welke kant de beheerder op moet; de app biedt daarnaast een voorstel.
      */
     public function after(): array
     {
@@ -66,34 +78,59 @@ class UpdateBrandingRequest extends FormRequest
 
                 $primary = $this->input('primary_color');
                 $accent = $this->input('accent_color');
-                $text = config('branding.contrast.text');
-                $graphic = config('branding.contrast.graphic');
 
-                $ratio = ContrastRatio::between($primary, '#FFFFFF');
-                if ($ratio < $text) {
-                    $validator->errors()->add('primary_color', sprintf(
-                        'De primaire kleur heeft te weinig contrast met wit (%s:1). Witte tekst op deze kleur moet minimaal %s:1 halen (WCAG AA).',
-                        $this->formatRatio($ratio), $this->formatRatio($text),
-                    ));
+                if (ContrastRatio::between($primary, '#FFFFFF') < config('branding.contrast.text')) {
+                    $validator->errors()->add('primary_color', self::PRIMARY_TOO_LIGHT);
                 }
 
-                $ratio = ContrastRatio::between($accent, '#FFFFFF');
-                if ($ratio < $graphic) {
-                    $validator->errors()->add('accent_color', sprintf(
-                        'De accentkleur heeft te weinig contrast met wit (%s:1). Minimaal %s:1 is nodig om accenten op een lichte achtergrond te zien (WCAG 1.4.11).',
-                        $this->formatRatio($ratio), $this->formatRatio($graphic),
-                    ));
-                }
-
-                $ratio = ContrastRatio::between($accent, $primary);
-                if ($ratio < $graphic) {
-                    $validator->errors()->add('accent_color', sprintf(
-                        'De accentkleur heeft te weinig contrast met de primaire kleur (%s:1). Minimaal %s:1 is nodig (WCAG 1.4.11).',
-                        $this->formatRatio($ratio), $this->formatRatio($graphic),
-                    ));
+                $accentMessage = self::accentMessage($primary, $accent);
+                if ($accentMessage !== null) {
+                    $validator->errors()->add('accent_color', $accentMessage);
                 }
             },
         ];
+    }
+
+    /**
+     * Welke kant het accent op moet. Het accent moet van wit én van de primaire kleur afsteken,
+     * dus "donkerder" is niet altijd goed: naast donkerblauw moet een te donker accent juist
+     * lichter. De grenzen volgen uit de contrastformule (L = relatieve luminantie):
+     * verhouding = (L_licht + 0,05) / (L_donker + 0,05). Zelfde logica als
+     * `BrandingValidation.accentMessage` in de iOS-app.
+     */
+    public static function accentMessage(string $primary, string $accent): ?string
+    {
+        $graphic = config('branding.contrast.graphic');
+        $onWhite = ContrastRatio::between($accent, '#FFFFFF') >= $graphic;
+        $onPrimary = ContrastRatio::between($accent, $primary) >= $graphic;
+
+        if ($onWhite && $onPrimary) {
+            return null;
+        }
+
+        $primaryLuminance = ContrastRatio::relativeLuminance($primary);
+        $accentLuminance = ContrastRatio::relativeLuminance($accent);
+        $lightestOnWhite = 1.05 / $graphic - 0.05;
+        $darkerThanPrimary = ($primaryLuminance + 0.05) / $graphic - 0.05;
+        $lighterThanPrimary = $graphic * ($primaryLuminance + 0.05) - 0.05;
+        $canGoDarker = $darkerThanPrimary >= 0;
+        $canGoLighter = $lighterThanPrimary <= $lightestOnWhite;
+
+        if (! $canGoDarker && ! $canGoLighter) {
+            return self::NO_ACCENT_POSSIBLE;
+        }
+
+        if (! $onWhite) {
+            return self::ACCENT_FADES_ON_WHITE;
+        }
+
+        $goLighter = match (true) {
+            $canGoLighter && ! $canGoDarker => true,
+            $canGoDarker && ! $canGoLighter => false,
+            default => $lighterThanPrimary - $accentLuminance <= $accentLuminance - $darkerThanPrimary,
+        };
+
+        return $goLighter ? self::ACCENT_NEEDS_LIGHTER : self::ACCENT_NEEDS_DARKER;
     }
 
     public function messages(): array
@@ -104,18 +141,9 @@ class UpdateBrandingRequest extends FormRequest
             'organization_name.max' => 'De organisatienaam mag maximaal 40 tekens hebben.',
             'organization_name.regex' => 'De organisatienaam mag alleen letters, cijfers, spaties en . , & \' - bevatten.',
             'primary_color.required' => 'Kies een primaire kleur.',
-            'primary_color.regex' => 'Gebruik een hexkleur in het formaat #RRGGBB.',
+            'primary_color.regex' => 'Kies een geldige kleur, bijvoorbeeld #011936.',
             'accent_color.required' => 'Kies een accentkleur.',
-            'accent_color.regex' => 'Gebruik een hexkleur in het formaat #RRGGBB.',
+            'accent_color.regex' => 'Kies een geldige kleur, bijvoorbeeld #059669.',
         ];
-    }
-
-    /**
-     * Afkappen (niet afronden) op twee decimalen, zodat 4,496 niet als "4,50" wordt getoond
-     * terwijl het de 4,5-drempel níet haalt. Nederlandse decimale komma.
-     */
-    private function formatRatio(float $ratio): string
-    {
-        return number_format(floor($ratio * 100) / 100, 2, ',', '');
     }
 }

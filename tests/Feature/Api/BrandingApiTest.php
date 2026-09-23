@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Api;
 
+use App\Http\Requests\Api\UpdateBrandingRequest;
 use App\Models\Branding;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -125,18 +126,41 @@ class BrandingApiTest extends TestCase
         $this->assertSame(0, Branding::count());
     }
 
-    public function test_contrast_error_names_the_measured_ratio(): void
+    public function test_contrast_errors_are_plain_language_and_say_which_way_to_go(): void
     {
         Sanctum::actingAs(User::factory()->admin()->create());
 
-        // #767676 op wit = 4,54:1 (haalt het); #777777 = 4,47:1 (net niet).
+        // #767676 op wit haalt 4,5:1 net; #777777 net niet.
         $response = $this->putJson('/api/branding', [...self::VALID, 'primary_color' => '#777777'])
             ->assertUnprocessable();
 
-        $this->assertStringContainsString('(4,47:1)', $response->json('errors.primary_color.0'));
+        $message = $response->json('errors.primary_color.0');
+        $this->assertSame(UpdateBrandingRequest::PRIMARY_TOO_LIGHT, $message);
+        $this->assertStringNotContainsString(':1', $message, 'Geen verhoudingen voor beheerders');
+        $this->assertStringNotContainsString('WCAG', $message, 'Geen normcodes voor beheerders');
 
         $this->putJson('/api/branding', [...self::VALID, 'primary_color' => '#767676', 'accent_color' => '#059669'])
             ->assertJsonMissingValidationErrors(['primary_color']);
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: ?string}>
+     */
+    public static function accentDirections(): array
+    {
+        return [
+            'goed palet' => ['#011936', '#059669', null],
+            'accent valt weg op wit' => ['#011936', '#FDE68A', UpdateBrandingRequest::ACCENT_FADES_ON_WHITE],
+            'donker accent naast donkerblauw moet lichter' => ['#011936', '#1E3A8A', UpdateBrandingRequest::ACCENT_NEEDS_LIGHTER],
+            'licht accent naast middenbruin moet donkerder' => ['#B45309', '#D97706', UpdateBrandingRequest::ACCENT_NEEDS_DARKER],
+            'middendonkere primaire kleur: geen accent mogelijk' => ['#4F4F4F', '#FDE68A', UpdateBrandingRequest::NO_ACCENT_POSSIBLE],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('accentDirections')]
+    public function test_accent_message_gives_the_right_direction(string $primary, string $accent, ?string $expected): void
+    {
+        $this->assertSame($expected, UpdateBrandingRequest::accentMessage($primary, $accent));
     }
 
     public function test_accent_must_contrast_with_primary(): void
