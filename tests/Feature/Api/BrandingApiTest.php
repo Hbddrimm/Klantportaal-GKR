@@ -143,35 +143,16 @@ class BrandingApiTest extends TestCase
             ->assertJsonMissingValidationErrors(['primary_color']);
     }
 
-    /**
-     * @return array<string, array{0: string, 1: string, 2: ?string}>
-     */
-    public static function accentDirections(): array
-    {
-        return [
-            'goed palet' => ['#011936', '#059669', null],
-            'accent valt weg op wit' => ['#011936', '#FDE68A', UpdateBrandingRequest::ACCENT_FADES_ON_WHITE],
-            'donker accent naast donkerblauw moet lichter' => ['#011936', '#1E3A8A', UpdateBrandingRequest::ACCENT_NEEDS_LIGHTER],
-            'licht accent naast middenbruin moet donkerder' => ['#B45309', '#D97706', UpdateBrandingRequest::ACCENT_NEEDS_DARKER],
-            'middendonkere primaire kleur: geen accent mogelijk' => ['#4F4F4F', '#FDE68A', UpdateBrandingRequest::NO_ACCENT_POSSIBLE],
-        ];
-    }
-
-    #[\PHPUnit\Framework\Attributes\DataProvider('accentDirections')]
-    public function test_accent_message_gives_the_right_direction(string $primary, string $accent, ?string $expected): void
-    {
-        $this->assertSame($expected, UpdateBrandingRequest::accentMessage($primary, $accent));
-    }
-
-    public function test_accent_must_contrast_with_primary(): void
+    public function test_accent_is_only_checked_against_white(): void
     {
         Sanctum::actingAs(User::factory()->admin()->create());
 
-        // #EA580C haalt 3:1 tegen wit, maar niet tegen een middenbruine primary.
-        $this->putJson('/api/branding', [...self::VALID, 'primary_color' => '#7C2D12'])
+        // #EA580C naast middenbruin wordt geaccepteerd: het accent staat nooit op de primaire kleur.
+        $this->putJson('/api/branding', [...self::VALID, 'primary_color' => '#7C2D12'])->assertOk();
+
+        $this->putJson('/api/branding', [...self::VALID, 'accent_color' => '#FDE68A'])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['accent_color'])
-            ->assertJsonMissingValidationErrors(['primary_color']);
+            ->assertJsonPath('errors.accent_color.0', UpdateBrandingRequest::ACCENT_FADES_ON_WHITE);
     }
 
     /**

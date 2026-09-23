@@ -57,12 +57,6 @@ class UpdateBrandingRequest extends FormRequest
 
     public const ACCENT_FADES_ON_WHITE = 'Het accent valt bijna weg op een witte achtergrond. Kies een donkerdere accentkleur.';
 
-    public const ACCENT_NEEDS_LIGHTER = 'Het accent valt weg tegen de primaire kleur. Kies een lichtere accentkleur.';
-
-    public const ACCENT_NEEDS_DARKER = 'Het accent valt weg tegen de primaire kleur. Kies een donkerdere accentkleur.';
-
-    public const NO_ACCENT_POSSIBLE = 'Bij deze primaire kleur valt elk accent weg. Maak eerst de primaire kleur donkerder.';
-
     /**
      * Contrastregels (WCAG 2.2, ADR-010) over twee velden tegelijk. Afwijzen, niet stil
      * corrigeren: een automatisch aangepaste kleur is een huisstijl die niemand koos. De melding
@@ -83,54 +77,14 @@ class UpdateBrandingRequest extends FormRequest
                     $validator->errors()->add('primary_color', self::PRIMARY_TOO_LIGHT);
                 }
 
-                $accentMessage = self::accentMessage($primary, $accent);
-                if ($accentMessage !== null) {
-                    $validator->errors()->add('accent_color', $accentMessage);
+                // Het accent staat in de app alleen op witte vlakken, dus alleen daartegen toetsen.
+                // Een regel "accent op primair" maakte bij bijna elke merkkleur het accent bijna
+                // zwart; die komt pas terug als het accent ergens op de primaire kleur komt (ADR-010).
+                if (ContrastRatio::between($accent, '#FFFFFF') < config('branding.contrast.graphic')) {
+                    $validator->errors()->add('accent_color', self::ACCENT_FADES_ON_WHITE);
                 }
             },
         ];
-    }
-
-    /**
-     * Welke kant het accent op moet. Het accent moet van wit én van de primaire kleur afsteken,
-     * dus "donkerder" is niet altijd goed: naast donkerblauw moet een te donker accent juist
-     * lichter. De grenzen volgen uit de contrastformule (L = relatieve luminantie):
-     * verhouding = (L_licht + 0,05) / (L_donker + 0,05). Zelfde logica als
-     * `BrandingValidation.accentMessage` in de iOS-app.
-     */
-    public static function accentMessage(string $primary, string $accent): ?string
-    {
-        $graphic = config('branding.contrast.graphic');
-        $onWhite = ContrastRatio::between($accent, '#FFFFFF') >= $graphic;
-        $onPrimary = ContrastRatio::between($accent, $primary) >= $graphic;
-
-        if ($onWhite && $onPrimary) {
-            return null;
-        }
-
-        $primaryLuminance = ContrastRatio::relativeLuminance($primary);
-        $accentLuminance = ContrastRatio::relativeLuminance($accent);
-        $lightestOnWhite = 1.05 / $graphic - 0.05;
-        $darkerThanPrimary = ($primaryLuminance + 0.05) / $graphic - 0.05;
-        $lighterThanPrimary = $graphic * ($primaryLuminance + 0.05) - 0.05;
-        $canGoDarker = $darkerThanPrimary >= 0;
-        $canGoLighter = $lighterThanPrimary <= $lightestOnWhite;
-
-        if (! $canGoDarker && ! $canGoLighter) {
-            return self::NO_ACCENT_POSSIBLE;
-        }
-
-        if (! $onWhite) {
-            return self::ACCENT_FADES_ON_WHITE;
-        }
-
-        $goLighter = match (true) {
-            $canGoLighter && ! $canGoDarker => true,
-            $canGoDarker && ! $canGoLighter => false,
-            default => $lighterThanPrimary - $accentLuminance <= $accentLuminance - $darkerThanPrimary,
-        };
-
-        return $goLighter ? self::ACCENT_NEEDS_LIGHTER : self::ACCENT_NEEDS_DARKER;
     }
 
     public function messages(): array

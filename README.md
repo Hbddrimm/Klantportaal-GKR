@@ -140,7 +140,7 @@ Het portaal kan onder de naam en huisstijl van een andere organisatie worden aan
     | `DELETE` | `/api/branding/logo` | admin | logo verwijderen (terug naar default) |
 
     Antwoord: `{organization_name, primary_color, accent_color, logo_path, updated_at}`. `logo_path` is root-relatief (`/storage/branding/default/<hash>.png`); clients zetten het achter hun eigen base-URL.
-*   **Validatie bij opslaan:** naam 2–40 tekens (letters, cijfers en `. , & ' -`), kleuren strikt `#RRGGBB`, en WCAG-contrast: primair ↔ wit ≥ 4,5:1, accent ↔ wit ≥ 3:1, accent ↔ primair ≥ 3:1. Logo: PNG/JPG/WebP, max. 2 MB, 64–2000 px; **SVG wordt geweigerd**. Fouten komen terug als 422 met een melding in gewone taal die zegt welke kant de kleur op moet (bijv. "Kies een donkerdere primaire kleur."); zonder verhoudingen of normcodes.
+*   **Validatie bij opslaan:** naam 2–40 tekens (letters, cijfers en `. , & ' -`), kleuren strikt `#RRGGBB`, en WCAG-contrast: primair ↔ wit ≥ 4,5:1 en accent ↔ wit ≥ 3:1. Logo: PNG/JPG/WebP, max. 2 MB, 64–2000 px; **SVG wordt geweigerd**. Fouten komen terug als 422 met een melding in gewone taal die zegt welke kant de kleur op moet (bijv. "Kies een donkerdere primaire kleur."); zonder verhoudingen of normcodes.
 *   **Autorisatie:** `auth:sanctum` + `admin`-middleware (geeft voor API-requests een JSON-403 in plaats van een redirect) + `BrandingPolicy`.
 *   **Lokaal:** `php artisan migrate` en eenmalig `php artisan storage:link` (voor het serveren van logo's). De login-response bevat nu ook `user.is_admin`.
 *   **Railway:** het containerfilesystem is vluchtig; zonder volume op `storage/` verdwijnt een geüpload logo bij een deploy en valt de app terug op "geen logo".
