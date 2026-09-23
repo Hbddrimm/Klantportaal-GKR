@@ -9,6 +9,7 @@ Het GKR Klantportaal is een veilig, overzichtelijk platform gebouwd met het Lara
 4. Rollen en Rechten
 5. Projectstructuur
 6. Deployment (Railway)
+7. White-label branding (API)
 
 ---
 
@@ -120,3 +121,28 @@ Dit project is voorbereid om eenvoudig te worden uitgerold via **Railway.app**.
 
 *   In de map `railway/` bevindt zich het script `init-app.sh`. Dit script zorgt ervoor dat tijdens het opstarten op het cloudplatform automatisch de juiste stappen worden gezet (zoals het optimaliseren van de configuratie en het veilig uitvoeren van database-migraties).
 *   Zorg ervoor dat bij het instellen van de omgevingsvariabelen op Railway de database-koppeling correct naar de gekoppelde Railway database-dienst verwijst.
+
+---
+
+## 7. White-label branding (API)
+
+Het portaal kan onder de naam en huisstijl van een andere organisatie worden aangeboden, zonder codewijziging (FR-02 / NFR-03). Ontwerp en afwegingen: **ADR-010** in `StageProject/docs/adr/`.
+
+*   **Eén brandingrecord per installatie** (`brandings`-tabel, model `App\Models\Branding`). `klant_id` is voorbereid maar nog niet in gebruik; per-klant branding volgt met het Klant-model (#33).
+*   **Defaults** staan in `config/branding.php` (`Klantportaal`, `#011936`, `#059669`, geen logo). Een installatie zonder configuratie toont dus geen merknaam. De organisatie stelt haar eigen naam, kleuren en logo in vanuit de app (Profiel → Huisstijl).
+*   **Endpoints:**
+
+    | Methode | Pad | Toegang | Doel |
+    |---|---|---|---|
+    | `GET` | `/api/branding` | publiek (throttle 60/min) | huidige branding, of de defaults; nodig op het inlogscherm |
+    | `PUT` | `/api/branding` | admin | `organization_name`, `primary_color`, `accent_color` (volledig) |
+    | `POST` | `/api/branding/logo` | admin | multipart-veld `logo` |
+    | `DELETE` | `/api/branding/logo` | admin | logo verwijderen (terug naar default) |
+
+    Antwoord: `{organization_name, primary_color, accent_color, logo_path, updated_at}`. `logo_path` is root-relatief (`/storage/branding/default/<hash>.png`); clients zetten het achter hun eigen base-URL.
+*   **Validatie bij opslaan:** naam 2–40 tekens (letters, cijfers en `. , & ' -`), kleuren strikt `#RRGGBB`, en WCAG-contrast: primair ↔ wit ≥ 4,5:1, accent ↔ wit ≥ 3:1, accent ↔ primair ≥ 3:1. Logo: PNG/JPG/WebP, max. 2 MB, 64–2000 px; **SVG wordt geweigerd**. Fouten komen terug als 422 met de gemeten contrastwaarde in de melding.
+*   **Autorisatie:** `auth:sanctum` + `admin`-middleware (geeft voor API-requests een JSON-403 in plaats van een redirect) + `BrandingPolicy`.
+*   **Lokaal:** `php artisan migrate` en eenmalig `php artisan storage:link` (voor het serveren van logo's). De login-response bevat nu ook `user.is_admin`.
+*   **Railway:** het containerfilesystem is vluchtig; zonder volume op `storage/` verdwijnt een geüpload logo bij een deploy en valt de app terug op "geen logo".
+*   **Nog niet gebrand:** de web-app (Tailwind-kleuren, Blade-layouts, logo-component), e-mails en ICS-exports gebruiken nog vaste GKR-waarden. Die volgen in een vervolg-issue, via dezelfde `Branding::current()`.
+
