@@ -2,204 +2,177 @@
 
 namespace App\Http\Controllers\Client;
 
+use App\Enums\AppointmentStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Appointment;
 use App\Models\User;
+use App\Services\Appointments\AppointmentService;
+use App\Services\Appointments\WorkingHours;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\Rule;
 
+/**
+ * Website: afspraken van de klant. De domeinlogica zit in AppointmentService (gedeeld met de
+ * API, ADR-006/ADR-011); autorisatie in AppointmentPolicy.
+ */
 class AppointmentController extends Controller
 {
+    public function __construct(private readonly AppointmentService $appointments) {}
+
     /**
      * Toon het afsprakenoverzicht en bereid de boekingsmodal voor.
      */
-public function index()
-{
-    $user = auth()->user();
+    public function index(WorkingHours $hours)
+    {
+        $user = auth()->user();
 
-    // 1. Haal alle actieve afspraken op (FIX: 'Geannuleerd' wordt nu direct uitgesloten voor de klant)
-    $appointments = Appointment::where('user_id', $user->id)
-        ->where('status', '!=', 'Geannuleerd') // <--- VERBERG GEANNULEERDE AFSPRAKEN DIRECT
-        ->with(['project', 'attendees'])
-        ->orderBy('start_time', 'asc')
-        ->get();
+        // Geannuleerde afspraken worden voor de klant direct uitgesloten
+        $appointments = Appointment::where('user_id', $user->id)
+            ->where('status', '!=', AppointmentStatus::Geannuleerd->value)
+            ->with(['project', 'attendees'])
+            ->orderBy('start_time', 'asc')
+            ->get();
 
-    // 2. Haal alle projecten van deze klant op voor de project-dropdown
-    $myProjects = $user->projects;
+        $myProjects = $user->projects;
+        $gkrEmployees = User::where('is_admin', true)->orderBy('name', 'asc')->get();
 
-    // 3. Haal alle GKR Medewerkers (admins) op voor de medewerker-dropdowns
-    $gkrEmployees = User::where('is_admin', true)->orderBy('name', 'asc')->get();
+        // Het actieve voorstel (met de keuzemomenten)
+        $appointmentProposal = Appointment::where('user_id', $user->id)
+            ->where('status', AppointmentStatus::Voorstel->value)
+            ->with(['project', 'attendees', 'options'])
+            ->latest()
+            ->first();
 
-    // 4. Haal het actieve voorstel op (met de 3 keuzemomenten/options)
-    $appointmentProposal = Appointment::where('user_id', $user->id)
-        ->where('status', 'Voorstel')
-        ->with(['project', 'attendees', 'options'])
-        ->latest()
-        ->first();
+        $standardSlots = $hours->slotLabels();
 
-    // Stuur alles mee naar de view
-    return view('client.appointments.index', compact('appointments', 'myProjects', 'gkrEmployees', 'appointmentProposal'));
-}
+        return view('client.appointments.index', compact('appointments', 'myProjects', 'gkrEmployees', 'appointmentProposal', 'standardSlots'));
+    }
 
     /**
      * Sla de nieuwe afspraakaanvraag op in de database.
      */
- public function store(Request $request)
-{
-    // 1. Schoon de employees array EERST op door lege string-waardes te verwijderen
-    if ($request->has('employees')) {
-        // Dit filtert alle lege keuzes ("") direct weg uit de array
-        $filteredEmployees = array_filter($request->employees);
-        $request->merge(['employees' => $filteredEmployees]);
+    public function store(Request $request)
+    {
+        // Lege keuzes ("-- Kies naam --") wegfilteren
+        $request->merge(['employees' => array_values(array_filter((array) $request->input('employees', [])))]);
+
+        $validated = $request->validate([
+            // Alleen een eigen project; een vreemd project-id faalt als "ongeldig".
+            'project_id' => ['required', 'integer', Rule::exists('projects', 'id')->where('user_id', $request->user()->id)],
+            'type' => ['required', Rule::in([Appointment::TYPE_TELEFOON, Appointment::TYPE_ONLINE, Appointment::TYPE_FYSIEK])],
+            'title' => 'required|string|max:255',
+            'date' => 'required|date_format:Y-m-d|after_or_equal:today',
+            'time_slot' => ['required', 'string', 'regex:/^\d{2}:\d{2} - \d{2}:\d{2}$/'],
+            'employees' => 'required|array|min:1|max:2',
+            'employees.*' => 'integer|exists:users,id',
+            'description' => 'nullable|string|max:500',
+        ]);
+
+        [$startHour] = explode(' - ', $validated['time_slot']);
+
+        $this->appointments->requestByClient($request->user(), [
+            'project_id' => (int) $validated['project_id'],
+            'type' => $validated['type'],
+            'title' => $validated['title'],
+            'description' => $validated['description'] ?? null,
+            'employee_ids' => array_map('intval', $validated['employees']),
+            'start' => CarbonImmutable::parse($validated['date'].' '.$startHour, config('app.timezone')),
+        ]);
+
+        return redirect()->route('client.appointments.index')->with('success', 'Uw afspraakaanvraag is succesvol ingediend!');
     }
 
-    // 2. Valideer de invoer (Nu met de juiste verplichte en optionele velden)
-    $validated = $request->validate([
-        'project_id'   => 'required|exists:projects,id',
-        'type'         => 'required|in:telefoon,online,fysiek',
-        'title'        => 'required|string|max:255',
-        'date'         => 'required|date|after_or_equal:today',
-        'time_slot'    => 'required|string', 
-        'employees'    => 'required|array|min:1', // Er moet nu minimaal 1 medewerker overblijven
-        'employees.*'  => 'exists:users,id',      // Elke overgebleven ID moet bestaan
-        'description'  => 'nullable|string|max:500', // Nullable gemaakt conform design
-    ]);
+    public function confirmSlot(Request $request, Appointment $appointment)
+    {
+        Gate::authorize('respond', $appointment);
 
-    // 3. Splits het geselecteerde tijdslot (bijv. "09:00 - 10:00")
-    [$startHour, $endHour] = explode(' - ', $request->time_slot);
-    
-    $startTime = \Carbon\Carbon::parse($request->date . ' ' . $startHour);
-    $endTime   = \Carbon\Carbon::parse($request->date . ' ' . $endHour);
+        $validated = $request->validate(['option_id' => 'required|integer']);
 
-    // 4. Maak de basisafspraak aan
-    $appointment = Appointment::create([
-        'user_id'     => auth()->id(),
-        'project_id'  => $request->project_id,
-        'title'       => $request->title,
-        'type'        => $request->type,
-        'start_time'  => $startTime,
-        'end_time'    => $endTime,
-        'description' => $request->description, // Slaat netjes NULL op als het leeg is
-    ]);
+        $this->appointments->confirmOption($appointment, (int) $validated['option_id']);
 
-    // 5. Koppel de overgebleven medewerker ID's aan de koppeltabel
-    $appointment->attendees()->attach($request->employees);
-
-    return redirect()->route('client.appointments.index')->with('success', 'Uw afspraakaanvraag is succesvol ingediend!');
-}
-
-
-public function confirmSlot(Request $request, Appointment $appointment)
-{
-    $request->validate([
-        'option_id' => 'required|exists:appointment_options,id'
-    ]);
-
-    // Haal de geselecteerde optie op
-    $selectedOption = \App\Models\AppointmentOption::where('appointment_id', $appointment->id)
-        ->where('id', $request->option_id)
-        ->first();
-
-    if (!$selectedOption) {
-        return response()->json(['status' => 'error', 'message' => 'Dit tijdslot is niet geldig voor deze afspraak.'], 422);
+        return response()->json([
+            'status' => 'success',
+            'message' => 'De afspraak is succesvol definitief ingepland!',
+        ]);
     }
 
-    // 1. Update de hoofdafspraak met de definitieve tijden en de NIEUWE status
-    $appointment->update([
-        'start_time' => $selectedOption->start_time,
-        'end_time'   => $selectedOption->end_time,
-        'status'     => 'Bevestigd door klant' // <--- AANGEPAST: Dit triggert straks de groene banner bij de admin!
-    ]);
-
-    // 2. Verwijder de overige 3 opties uit de keuzetabel, want de keuze is gemaakt
-    $appointment->options()->delete();
-
-    // Geef een succesvol JSON antwoord terug aan de JavaScript fetch-engine
-    return response()->json([
-        'status' => 'success',
-        'message' => 'De afspraak is succesvol definitief ingepland!'
-    ]);
-}
-
-
-/**
+    /**
      * Verwerk het alternatieve tijdstip ingediend door de klant.
      */
     public function suggestAlternative(Request $request, Appointment $appointment)
     {
-        $request->validate([
-            'date'      => 'required|date|after_or_equal:today',
-            'time_slot' => 'required|string',
+        Gate::authorize('respond', $appointment);
+
+        $validated = $request->validate([
+            'date' => 'required|date_format:Y-m-d|after_or_equal:today',
+            'time_slot' => ['required', 'string', 'regex:/^\d{2}:\d{2} - \d{2}:\d{2}$/'],
         ]);
 
-        [$startHour, $endHour] = explode(' - ', $request->time_slot);
-        
-        $startTime = \Carbon\Carbon::parse($request->date . ' ' . $startHour);
-        $endTime   = \Carbon\Carbon::parse($request->date . ' ' . $endHour);
+        [$startHour] = explode(' - ', $validated['time_slot']);
 
-        $appointment->update([
-            'start_time' => $startTime,
-            'end_time'   => $endTime,
-            'status'     => 'Alternatief gekozen'
-        ]);
-
-        $appointment->options()->delete();
+        $this->appointments->chooseAlternative(
+            $appointment,
+            CarbonImmutable::parse($validated['date'].' '.$startHour, config('app.timezone')),
+        );
 
         return response()->json([
-            'status'  => 'success',
-            'message' => 'Uw alternatieve tijdstip is succesvol ingediend bij GKR!'
+            'status' => 'success',
+            'message' => 'Uw alternatieve tijdstip is succesvol ingediend bij GKR!',
         ]);
     }
 
+    /**
+     * Genereer en download een .ics bestand voor Apple/Outlook Agenda.
+     *
+     * Alleen voor de klant van de afspraak en voor admins (was eerder publiek bereikbaar op
+     * oplopend id). Tijden in UTC, zoals het `Z`-achtervoegsel belooft.
+     */
+    public function downloadIcs(Appointment $appointment)
+    {
+        Gate::authorize('view', $appointment);
+
+        $format = fn ($time) => CarbonImmutable::parse($time)->utc()->format('Ymd\THis\Z');
+
+        $title = $this->sanitizeIcsText($appointment->title);
+        $description = $this->sanitizeIcsText($appointment->description ?? 'Gesprek via GKR Klantportaal');
+        $location = $this->sanitizeIcsText($appointment->locationLabel());
+
+        $icsContent = implode("\r\n", [
+            'BEGIN:VCALENDAR',
+            'VERSION:2.0',
+            'PRODID:-//GKR Klantportaal//NONSGML v1.0//NL',
+            'CALSCALE:GREGORIAN',
+            'BEGIN:VEVENT',
+            // Vast per afspraak: opnieuw importeren werkt de bestaande afspraak bij.
+            'UID:appointment-'.$appointment->id.'@gkr-klantportaal.nl',
+            'DTSTAMP:'.$format(now()),
+            'DTSTART:'.$format($appointment->start_time),
+            'DTEND:'.$format($appointment->end_time),
+            'SUMMARY:'.$title,
+            'DESCRIPTION:'.$description,
+            'LOCATION:'.$location,
+            'END:VEVENT',
+            'END:VCALENDAR',
+        ]);
+
+        return response($icsContent)
+            ->header('Content-Type', 'text/calendar; charset=utf-8')
+            ->header('Content-Disposition', 'attachment; filename="gkr-afspraak-'.$appointment->id.'.ics"');
+    }
 
     /**
- * Genereer en download een .ics bestand voor Apple/Outlook Agenda.
- */
-public function downloadIcs(Appointment $appointment)
-{
-    // 1. Formatteer de tijden naar het iCalendar-formaat (YYYYMMDDTHMMSSZ)
-    $startTime = Carbon::parse($appointment->start_time)->format('Ymd\THms\Z');
-    $endTime = Carbon::parse($appointment->end_time)->format('Ymd\THms\Z');
+     * Hulpfunctie om speciale tekens te filteren volgens de iCalendar-richtlijnen.
+     */
+    private function sanitizeIcsText($text)
+    {
+        $text = str_replace('\\', '\\\\', $text);
+        $text = str_replace(';', '\;', $text);
+        $text = str_replace(',', '\,', $text);
+        $text = str_replace("\n", '\\n', $text);
+        $text = str_replace("\r", '', $text);
 
-    // 2. Maak de teksten veilig voor het bestand (escapen van komma's en enters)
-    $title = $this->sanitizeIcsText($appointment->title);
-    $description = $this->sanitizeIcsText($appointment->description ?? 'Gesprek via GKR Klantportaal');
-    $location = $this->sanitizeIcsText($appointment->type ?? 'Online / GKR Portaal');
-
-    // 3. Bouw de universele iCalendar-bestandsstructuur op
-    $icsContent = "BEGIN:VCALENDAR\n" .
-                  "VERSION:2.0\n" .
-                  "PRODID:-//GKR Klantportaal//NONSGML v1.0//NL\n" .
-                  "CALSCALE:GREGORIAN\n" .
-                  "BEGIN:VEVENT\n" .
-                  "UID:" . uniqid() . "@gkr-klantportaal.nl\n" .
-                  "DTSTAMP:" . Carbon::now()->format('Ymd\THms\Z') . "\n" .
-                  "DTSTART:" . $startTime . "\n" .
-                  "DTEND:" . $endTime . "\n" .
-                  "SUMMARY:" . $title . "\n" .
-                  "DESCRIPTION:" . $description . "\n" .
-                  "LOCATION:" . $location . "\n" .
-                  "END:VEVENT\n" .
-                  "END:VCALENDAR";
-
-    // 4. Stuur het bestand terug als een actieve download
-    return response($icsContent)
-        ->header('Content-Type', 'text/calendar; charset=utf-8')
-        ->header('Content-Disposition', 'attachment; filename="gkr-afspraak-' . $appointment->id . '.ics"');
-}
-
-/**
- * Hulpfunctie om speciale tekens te filteren volgens de iCalendar-richtlijnen.
- */
-private function sanitizeIcsText($text)
-{
-    $text = str_replace('\\', '\\\\', $text);
-    $text = str_replace(';', '\;', $text);
-    $text = str_replace(',', '\,', $text);
-    $text = str_replace("\n", '\\n', $text);
-    $text = str_replace("\r", '', $text);
-    return $text;
-}
-
-
+        return $text;
+    }
 }

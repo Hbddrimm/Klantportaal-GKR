@@ -46,6 +46,8 @@
             </tr>
         </table>
 
+      {{-- Met de Outlook-koppeling staat de afspraak al in de agenda (uitnodiging); dan geen extra knoppen (ADR-011). --}}
+      @unless(config('calendar.driver') === 'graph')
       <div style="margin-top: 24px; padding-top: 16px; border-top: 1px dashed #e2e8f0;">
             <p style="margin: 0 0 12px 0; font-size: 13px; color: #6b7280; font-weight: 600;">Afspraak toevoegen aan je agenda:</p>
             
@@ -61,6 +63,7 @@
                 ☁ Outlook Web
             </a>
         </div>
+      @endunless
     </div>
 
     <p style="font-size: 15px; color: #4b5563; margin-bottom: 32px;">Je kunt inloggen op het dashboard om eventuele documenten, voorbereidingen of details te bekijken.</p>

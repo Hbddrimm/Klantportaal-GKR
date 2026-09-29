@@ -162,7 +162,7 @@
                         <h3 id="adminCalendarTitle" class="text-lg font-bold text-[#011936] capitalize"></h3>
                         
                         <div class="flex items-center space-x-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200">
-                            <input type="checkbox" id="filterMyAppointments" onchange="renderAdminDashboardCalendar()" class="rounded text-[#011936] focus:ring-[#011936] h-4 w-4 cursor-pointer">
+                            <input type="checkbox" id="filterMyAppointments" @checked($showOnlyMine) onchange="saveAgendaScope(this.checked); renderAdminDashboardCalendar()" class="rounded text-[#011936] focus:ring-[#011936] h-4 w-4 cursor-pointer">
                             <label for="filterMyAppointments" class="text-xs font-bold text-gray-650 cursor-pointer select-none">Toon alleen mijn afspraken</label>
                         </div>
 
@@ -540,7 +540,20 @@
         let activeSlotIndex = 1; 
 
         const monthsNl = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september", "oktober", "november", "december"];
-        const standardSlots = ["09:00 - 10:00", "10:00 - 11:00", "11:00 - 12:00", "13:00 - 14:00", "14:00 - 15:00", "15:00 - 16:00",];
+        const standardSlots = @json($standardSlots); // uit config/appointments.php (werktijden)
+
+        // Onthoud "Toon alleen mijn afspraken" per account, ook voor de app (ADR-011, stap 4c)
+        function saveAgendaScope(onlyMine) {
+            fetch("{{ route('admin.appointments.scope') }}", {
+                method: "PATCH",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "X-CSRF-TOKEN": "{{ csrf_token() }}"
+                },
+                body: JSON.stringify({ agenda_scope: onlyMine ? 'mine' : 'all' })
+            }).catch(err => console.error("Voorkeur niet opgeslagen:", err));
+        }
 
         document.addEventListener('DOMContentLoaded', () => {
             renderAdminDashboardCalendar();

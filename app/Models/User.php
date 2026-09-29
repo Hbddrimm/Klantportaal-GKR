@@ -49,5 +49,35 @@ public function isAdmin(): bool
     return (bool) $this->is_admin; // Geeft true of false terug
 }
 
+/**
+ * Outlook-kleurpreset van deze medewerker (ADR-011). Zonder eigen keuze een vaste kleur uit het
+ * standaardpalet op basis van het id, zodat collega's automatisch verschillende kleuren krijgen.
+ */
+public function calendarColorPreset(): string
+{
+    $colors = config('calendar.colors');
+
+    if ($this->calendar_color && isset($colors[$this->calendar_color])) {
+        return $this->calendar_color;
+    }
+
+    $palette = config('calendar.default_palette');
+
+    return $palette[($this->id ?? 0) % count($palette)];
+}
+
+public function calendarColorHex(): string
+{
+    return config('calendar.colors')[$this->calendarColorPreset()];
+}
+
+/**
+ * "Mijn afspraken" (mine) of "Iedereen" (all) in het afsprakenoverzicht van een admin.
+ */
+public function prefersOwnAppointmentsOnly(): bool
+{
+    return $this->agenda_scope === 'mine';
+}
+
 }
 

@@ -11,8 +11,6 @@ use App\Http\Controllers\Admin\AppointmentController as AdminAppointmentControll
 use App\Http\Controllers\SitePasswordController;
 use App\Http\Controllers\Client\AppointmentController;
 
-// Publieke route voor het genereren van het agenda-bestand (werkt voor iedereen via de mail)
-Route::get('/appointments/{appointment}/ics', [AppointmentController::class, 'downloadIcs'])->name('appointments.ics');
 /*
 |--------------------------------------------------------------------------
 | Site Password Routes
@@ -77,6 +75,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::post('/appointments/{appointment}/suggest-alternative', [App\Http\Controllers\Client\AppointmentController::class, 'suggestAlternative'])
     ->name('client.appointments.suggest-alternative');
+
+    // Agenda-bestand: alleen voor de klant van de afspraak en admins (AppointmentPolicy).
+    // Stond eerder buiten de auth-groep, waardoor elke afspraak op id op te vragen was.
+    Route::get('/appointments/{appointment}/ics', [AppointmentController::class, 'downloadIcs'])->name('appointments.ics');
 });
 
 
@@ -126,8 +128,11 @@ Route::middleware(['auth', 'verified', 'admin'])
         // Actieknop om rol aan te passen
         Route::patch('/gebruikers/{user}/toggle-admin', [AdminDashboardController::class, 'toggleAdmin'])->name('users.toggle-admin');
 
-        // Route voor de live beschikbaarheids-check van medewerkers (Mock data)
+        // Live beschikbaarheid van medewerkers: platform én Outlook (ADR-011)
         Route::post('/appointments/check-availability', [AdminAppointmentController::class, 'checkAvailability'])->name('appointments.check');
+
+        // "Toon alleen mijn afspraken" onthouden per account
+        Route::patch('/agenda/voorkeur', [AdminAppointmentController::class, 'updateAgendaScope'])->name('appointments.scope');
 
 });
 
