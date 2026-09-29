@@ -158,34 +158,44 @@ Bevestigde afspraken komen automatisch in Outlook, en het platform kijkt in Outl
 *   **Eén koppeling voor heel GKR** (Microsoft Graph, applicatierechten). Medewerkers hoeven niets te koppelen; klanten ook niet.
 *   **Richting: platform → Outlook.** Wijzigingen die iemand in Outlook zelf maakt, komen niet terug in het platform.
 *   Bij **Bevestigd** maakt het platform een afspraak in de agenda van de **organiserende medewerker** (wie het voorstel deed, of bij een klantaanvraag de eerst gekozen medewerker). Outlook stuurt zelf de uitnodiging, vanaf diens werkmail, naar de klant en de andere medewerkers. **Online** krijgt een Teams-link.
-*   `CALENDAR_OVERVIEW_MAILBOX` (bijv. `info@gkr.nl`) staat als optionele deelnemer op elke afspraak. Daar wordt de kopie stil geaccepteerd en gekleurd per medewerker (Outlook-categorie).
+*   **info@gkr.nl:** GKR bekijkt de agenda's van collega's in info@ als gedeelde agenda's. Een afspraak in bijvoorbeeld Owens agenda verschijnt daar dus vanzelf, in de kleur die Outlook aan Owens agenda geeft. Het platform nodigt info@ daarom **niet** uit (anders zou elke afspraak dubbel staan) en `CALENDAR_OVERVIEW_MAILBOX` blijft leeg. Wil een andere organisatie wél één overzichtsmailbox als deelnemer, zet dan dat adres in `CALENDAR_OVERVIEW_MAILBOX`: de kopie wordt daar stil geaccepteerd en per medewerker gekleurd (vereist extra `MailboxSettings.ReadWrite`).
 *   **Op locatie** met reistijd: aparte "Reistijd"-blokken vóór en na de afspraak in de agenda's van de betrokken medewerkers.
 *   **Geannuleerd**: de afspraak wordt in Outlook geannuleerd (deelnemers krijgen een annulering) en de reistijdblokken verdwijnen.
 *   **Beschikbaarheid:** werktijden uit `config/appointments.php` (ma–vr 09:00–17:00, blokken van een uur), min vastgelegde afspraken, min Outlook (bezet, voorlopig, afwezig), min gesloten dagen (`closed_days`, beheerd door admins). Vakanties zet een medewerker zelf in Outlook als **Afwezig**.
 *   **Dubbele boekingen:** bij het definitief vastleggen neemt de server per medewerker een lock en controleert opnieuw (vers uit Outlook). Wie als tweede komt, krijgt 409 met een melding in gewone taal.
 *   De sync draait in de wachtrij (`SyncAppointmentToCalendar`), met opnieuw proberen bij tijdelijke fouten. Lukt het niet, dan staat `calendar_sync_status` op `failed` en ziet de admin dat in de app.
 
-### Instellen in Microsoft Entra (eenmalig, door een beheerder)
-1.  **App registreren:** Entra-beheercentrum → *App-registraties* → *Nieuwe registratie*, naam `Klantportaal`, alleen accounts in deze organisatie. Noteer *Directory (tenant) ID* en *Application (client) ID*.
-2.  **Rechten:** *API-machtigingen* → *Microsoft Graph* → **Toepassingsmachtigingen**: `Calendars.ReadWrite` en `MailboxSettings.ReadWrite` (voor de kleuren in de overzichtsagenda). Klik **Beheerderstoestemming verlenen**.
-3.  **Geheim:** *Certificaten en geheimen* → nieuw clientgeheim. Kopieer de waarde direct. **Zet een herinnering**: het geheim verloopt (maximaal 24 maanden); daarna stopt de sync tot er een nieuw geheim in Railway staat.
-4.  **Toegang beperken tot de juiste mailboxen:** maak een e-mailbeveiligde groep `Klantportaal-agenda's` met info@ en de medewerkersmailboxen, en beperk de app daartoe via Exchange Online PowerShell (RBAC for Applications):
+### Instellen in Microsoft 365 (eenmalig, door een Globale beheerder, bijv. Owen)
+De app krijgt géén rechten in Entra zelf, maar alleen via Exchange, beperkt tot één groep mailboxen. Zo kan hij nooit bij de mail of agenda van iemand buiten het team.
+
+1.  **App registreren:** entra.microsoft.com → *Toepassingen* → *App-registraties* → *Nieuwe registratie*, naam `Klantportaal`, alleen accounts in deze organisatie, geen omleidings-URI. Noteer *Directory (tenant) ID* en *Application (client) ID*. Geef hier **geen** API-machtigingen of beheerderstoestemming: dat zou toegang tot álle mailboxen geven.
+2.  **Geheim:** *Certificaten en geheimen* → nieuw clientgeheim. Kopieer de **waarde** direct (die zie je maar één keer). **Zet een herinnering**: het geheim verloopt (maximaal 24 maanden); daarna stopt de sync tot er een nieuw geheim in Railway staat.
+3.  **Object-ID:** *Toepassingen* → *Bedrijfstoepassingen* → `Klantportaal` → noteer de *Object-ID* (een andere dan op de registratiepagina).
+4.  **Groep:** admin.microsoft.com → *Teams en groepen* → *Actieve teams en groepen* → *Een groep toevoegen* → type **E-mail-ingeschakelde beveiliging** (niet "Microsoft 365"), naam `Klantportaal-agendas`, adres bijv. `klantportaal-agendas@gkr.nl` (dit adres wordt nooit gebruikt). Leden: de mailboxen van de medewerkers die afspraken hebben (`owen@`, `noah@`, `stijn@`, `york@`, `bo@gkr.nl`). **info@ hoeft er niet in** (zie boven). Een nieuwe medewerker voeg je later hier toe.
+5.  **Rechten alleen voor die groep** (Exchange Online PowerShell, `Install-Module ExchangeOnlineManagement`, dan `Connect-ExchangeOnline`):
     ```powershell
-    New-ServicePrincipal -AppId <client-id> -ObjectId <enterprise-app-object-id> -DisplayName "Klantportaal"
-    New-ManagementScope -Name "Klantportaal-agendas" -RecipientRestrictionFilter "MemberOfGroup -eq '<DN van de groep>'"
+    New-ServicePrincipal -AppId <client-id> -ObjectId <object-id-uit-stap-3> -DisplayName "Klantportaal"
+    $dn = (Get-Group "Klantportaal-agendas").DistinguishedName
+    New-ManagementScope -Name "Klantportaal-agendas" -RecipientRestrictionFilter "MemberOfGroup -eq '$dn'"
     New-ManagementRoleAssignment -App <client-id> -Role "Application Calendars.ReadWrite" -CustomResourceScope "Klantportaal-agendas"
-    New-ManagementRoleAssignment -App <client-id> -Role "Application MailboxSettings.ReadWrite" -CustomResourceScope "Klantportaal-agendas"
+
+    # Controle: True voor een teamlid, False voor iemand buiten de groep
+    Test-ServicePrincipalAuthorization -Identity <client-id> -Resource owen@gkr.nl
     ```
-    Haal daarna de tenant-brede Graph-toestemmingen uit stap 2 weer weg, zodat alleen de beperkte Exchange-rol overblijft. Zonder deze stap kan de app bij **alle** mailboxen in de organisatie.
-5.  **Omgevingsvariabelen** (lokaal in `.env`, op Railway in beide services):
+    Nieuwe rechten en nieuwe groepsleden kunnen tot ongeveer een uur nodig hebben voordat ze werken. (Alleen als je een overzichtsmailbox gebruikt: voeg die aan de groep toe en herhaal de laatste `New-ManagementRoleAssignment` met `-Role "Application MailboxSettings.ReadWrite"`.)
+6.  **Omgevingsvariabelen** (lokaal in `.env`, op Railway in de web- én de worker-service, bij voorkeur als gedeelde variabelen):
     ```
     CALENDAR_DRIVER=graph
-    CALENDAR_OVERVIEW_MAILBOX=info@gkr.nl
     MICROSOFT_TENANT_ID=...
     MICROSOFT_CLIENT_ID=...
     MICROSOFT_CLIENT_SECRET=...
+    QUEUE_CONNECTION=database
+    CACHE_STORE=database
     ```
-6.  **Controleren:** `php artisan calendar:check`. Dit laat per medewerker zien of de koppeling bij de agenda kan. Het e-mailadres van een admin in het platform moet gelijk zijn aan het Microsoft 365-adres.
+    `CACHE_STORE=database` zorgt dat web en worker dezelfde locks delen (bescherming tegen dubbele boekingen).
+7.  **Controleren:** `php artisan calendar:check`. Dit laat per medewerker zien of de koppeling bij de agenda kan. Het e-mailadres van een admin in het platform moet gelijk zijn aan het Microsoft 365-adres; een `FOUT` betekent meestal: niet in de groep, ander adres in het platform, of de rechten zijn nog niet actief.
+
+**Kleuren in de app:** elke medewerker krijgt automatisch een eigen kleur (tot 8 medewerkers gegarandeerd verschillend). Een admin kan een andere kiezen via `PATCH /api/admin/employees/{id}`; een gekozen kleur wordt niet aan een collega gegeven.
 
 ### Lokaal en in tests
 *   Standaard is `CALENDAR_DRIVER=fake`: er wordt nooit een echte agenda aangeroepen. Tests gebruiken `FakeCalendarProvider` en `Http::fake()`.
