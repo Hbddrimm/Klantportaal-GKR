@@ -12,8 +12,9 @@ return [
     // `graph` = echte Outlook-agenda's, `fake` = in-memory (lokaal en tests).
     'driver' => env('CALENDAR_DRIVER', 'fake'),
 
-    // Gedeelde overzichtsagenda (info@gkr.nl): staat als optionele deelnemer op elke afspraak
-    // en krijgt per medewerker een kleur. Leeg = geen overzichtsagenda.
+    // Optionele overzichtsagenda: staat als optionele deelnemer op elke afspraak en krijgt per
+    // medewerker een kleur. Standaard leeg: GKR bekijkt de agenda's van collega's in info@ al als
+    // gedeelde agenda's, en een extra deelnemer zou elke afspraak daar dubbel tonen (ADR-011).
     'overview_mailbox' => env('CALENDAR_OVERVIEW_MAILBOX'),
 
     'timezone' => 'Europe/Amsterdam',
@@ -27,9 +28,10 @@ return [
     ],
 
     /*
-    | Kleuren per medewerker. Outlook kent alleen vaste kleur-presets voor categorieën; de app
-    | krijgt de bijbehorende hexwaarde. Een medewerker zonder eigen keuze krijgt automatisch een
-    | kleur uit `default_palette` (op volgorde van id), zodat collega's elkaar niet overlappen.
+    | Kleuren per medewerker in de app (en in een eventuele overzichtsagenda). Outlook kent alleen
+    | vaste kleur-presets; de app krijgt de bijbehorende hexwaarde. Wie geen eigen kleur koos,
+    | krijgt de eerstvolgende vrije kleur uit `default_palette` (User::calendarColorAssignments),
+    | zodat tot 8 collega's elk een andere kleur hebben.
     */
     'colors' => [
         'preset0' => '#E74856',  // rood

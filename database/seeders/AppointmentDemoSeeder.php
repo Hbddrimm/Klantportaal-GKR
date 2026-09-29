@@ -27,6 +27,7 @@ class AppointmentDemoSeeder extends Seeder
             ['Noah van Schilt', 'noah@gkr.nl'],
             ['Stijn', 'stijn@gkr.nl'],
             ['York', 'york@gkr.nl'],
+            ['Bo', 'bo@gkr.nl'],
         ])->map(function (array $row) use ($password) {
             $user = User::firstOrNew(['email' => $row[1]]);
             $user->forceFill(['name' => $row[0], 'password' => $password, 'is_admin' => true, 'email_verified_at' => now()])->save();
@@ -41,7 +42,7 @@ class AppointmentDemoSeeder extends Seeder
         Project::firstOrCreate(['user_id' => $client->id, 'name' => 'Marketing Automation Setup'], ['status' => 'Strategie', 'progress' => 5]);
 
         $nextMonday = CarbonImmutable::now(config('app.timezone'))->next('monday')->setTime(10, 0);
-        [$owen, $noah, $stijn, $york] = $employees->all();
+        [$owen, $noah, $stijn, $york] = $employees->take(4)->all();
 
         $proposal = Appointment::create([
             'user_id' => $client->id,

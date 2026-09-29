@@ -50,20 +50,56 @@ public function isAdmin(): bool
 }
 
 /**
- * Outlook-kleurpreset van deze medewerker (ADR-011). Zonder eigen keuze een vaste kleur uit het
- * standaardpalet op basis van het id, zodat collega's automatisch verschillende kleuren krijgen.
+ * Outlook-kleurpreset van deze medewerker (ADR-011): zijn eigen keuze, of anders een automatische
+ * kleur (zie `calendarColorAssignments()`).
  */
 public function calendarColorPreset(): string
 {
-    $colors = config('calendar.colors');
-
-    if ($this->calendar_color && isset($colors[$this->calendar_color])) {
+    if ($this->hasOwnCalendarColor()) {
         return $this->calendar_color;
     }
 
-    $palette = config('calendar.default_palette');
+    return static::calendarColorAssignments()[$this->id] ?? config('calendar.default_palette')[0];
+}
 
-    return $palette[($this->id ?? 0) % count($palette)];
+/**
+ * Kleur per medewerker-id. Wie zelf een kleur koos, houdt die. De anderen krijgen op volgorde van
+ * id een kleur uit het standaardpalet, waarbij kleuren die al door een collega gekozen zijn worden
+ * overgeslagen. Zo hebben tot 8 medewerkers gegarandeerd elk een andere kleur (een verdeling op
+ * `id % 8` gaf dezelfde kleur aan bijvoorbeeld id 3 en 11).
+ *
+ * Eén kleine query per aanroep; er zijn maar een handvol medewerkers.
+ *
+ * @return array<int, string>
+ */
+public static function calendarColorAssignments(): array
+{
+    $admins = static::query()->where('is_admin', true)->orderBy('id')->get(['id', 'calendar_color']);
+
+    $chosen = $admins
+        ->filter(fn (self $admin) => $admin->hasOwnCalendarColor())
+        ->mapWithKeys(fn (self $admin) => [$admin->id => $admin->calendar_color]);
+
+    $free = array_values(array_diff(config('calendar.default_palette'), $chosen->all()));
+    if ($free === []) {
+        $free = config('calendar.default_palette');
+    }
+
+    $assignments = $chosen->all();
+    $rank = 0;
+
+    foreach ($admins as $admin) {
+        if (! isset($assignments[$admin->id])) {
+            $assignments[$admin->id] = $free[$rank++ % count($free)];
+        }
+    }
+
+    return $assignments;
+}
+
+private function hasOwnCalendarColor(): bool
+{
+    return $this->calendar_color !== null && isset(config('calendar.colors')[$this->calendar_color]);
 }
 
 public function calendarColorHex(): string
