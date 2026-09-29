@@ -10,6 +10,7 @@ Het GKR Klantportaal is een veilig, overzichtelijk platform gebouwd met het Lara
 5. Projectstructuur
 6. Deployment (Railway)
 7. White-label branding (API)
+8. Afspraken en Outlook-koppeling
 
 ---
 
@@ -121,6 +122,7 @@ Dit project is voorbereid om eenvoudig te worden uitgerold via **Railway.app**.
 
 *   In de map `railway/` bevindt zich het script `init-app.sh`. Dit script zorgt ervoor dat tijdens het opstarten op het cloudplatform automatisch de juiste stappen worden gezet (zoals het optimaliseren van de configuratie en het veilig uitvoeren van database-migraties).
 *   Zorg ervoor dat bij het instellen van de omgevingsvariabelen op Railway de database-koppeling correct naar de gekoppelde Railway database-dienst verwijst.
+*   **Queue-worker (sinds de Outlook-koppeling nodig):** maak een tweede Railway-service van dezelfde repo met startcommando `sh railway/worker.sh` en dezelfde omgevingsvariabelen. Zonder worker worden afspraken niet in Outlook gezet (ze blijven op "Wordt nu in Outlook gezet" staan). Zie sectie 8.
 
 ---
 
@@ -145,4 +147,81 @@ Het portaal kan onder de naam en huisstijl van een andere organisatie worden aan
 *   **Lokaal:** `php artisan migrate` en eenmalig `php artisan storage:link` (voor het serveren van logo's). De login-response bevat nu ook `user.is_admin`.
 *   **Railway:** het containerfilesystem is vluchtig; zonder volume op `storage/` verdwijnt een geüpload logo bij een deploy en valt de app terug op "geen logo".
 *   **Nog niet gebrand:** de web-app (Tailwind-kleuren, Blade-layouts, logo-component), e-mails en ICS-exports gebruiken nog vaste GKR-waarden. Die volgen in een vervolg-issue, via dezelfde `Branding::current()`.
+
+---
+
+## 8. Afspraken en Outlook-koppeling
+
+Bevestigde afspraken komen automatisch in Outlook, en het platform kijkt in Outlook wie er beschikbaar is (FR-08). Ontwerp en afwegingen: **ADR-011** in `StageProject/docs/adr/`.
+
+### Hoe het werkt
+*   **Eén koppeling voor heel GKR** (Microsoft Graph, applicatierechten). Medewerkers hoeven niets te koppelen; klanten ook niet.
+*   **Richting: platform → Outlook.** Wijzigingen die iemand in Outlook zelf maakt, komen niet terug in het platform.
+*   Bij **Bevestigd** maakt het platform een afspraak in de agenda van de **organiserende medewerker** (wie het voorstel deed, of bij een klantaanvraag de eerst gekozen medewerker). Outlook stuurt zelf de uitnodiging, vanaf diens werkmail, naar de klant en de andere medewerkers. **Online** krijgt een Teams-link.
+*   `CALENDAR_OVERVIEW_MAILBOX` (bijv. `info@gkr.nl`) staat als optionele deelnemer op elke afspraak. Daar wordt de kopie stil geaccepteerd en gekleurd per medewerker (Outlook-categorie).
+*   **Op locatie** met reistijd: aparte "Reistijd"-blokken vóór en na de afspraak in de agenda's van de betrokken medewerkers.
+*   **Geannuleerd**: de afspraak wordt in Outlook geannuleerd (deelnemers krijgen een annulering) en de reistijdblokken verdwijnen.
+*   **Beschikbaarheid:** werktijden uit `config/appointments.php` (ma–vr 09:00–17:00, blokken van een uur), min vastgelegde afspraken, min Outlook (bezet, voorlopig, afwezig), min gesloten dagen (`closed_days`, beheerd door admins). Vakanties zet een medewerker zelf in Outlook als **Afwezig**.
+*   **Dubbele boekingen:** bij het definitief vastleggen neemt de server per medewerker een lock en controleert opnieuw (vers uit Outlook). Wie als tweede komt, krijgt 409 met een melding in gewone taal.
+*   De sync draait in de wachtrij (`SyncAppointmentToCalendar`), met opnieuw proberen bij tijdelijke fouten. Lukt het niet, dan staat `calendar_sync_status` op `failed` en ziet de admin dat in de app.
+
+### Instellen in Microsoft Entra (eenmalig, door een beheerder)
+1.  **App registreren:** Entra-beheercentrum → *App-registraties* → *Nieuwe registratie*, naam `Klantportaal`, alleen accounts in deze organisatie. Noteer *Directory (tenant) ID* en *Application (client) ID*.
+2.  **Rechten:** *API-machtigingen* → *Microsoft Graph* → **Toepassingsmachtigingen**: `Calendars.ReadWrite` en `MailboxSettings.ReadWrite` (voor de kleuren in de overzichtsagenda). Klik **Beheerderstoestemming verlenen**.
+3.  **Geheim:** *Certificaten en geheimen* → nieuw clientgeheim. Kopieer de waarde direct. **Zet een herinnering**: het geheim verloopt (maximaal 24 maanden); daarna stopt de sync tot er een nieuw geheim in Railway staat.
+4.  **Toegang beperken tot de juiste mailboxen:** maak een e-mailbeveiligde groep `Klantportaal-agenda's` met info@ en de medewerkersmailboxen, en beperk de app daartoe via Exchange Online PowerShell (RBAC for Applications):
+    ```powershell
+    New-ServicePrincipal -AppId <client-id> -ObjectId <enterprise-app-object-id> -DisplayName "Klantportaal"
+    New-ManagementScope -Name "Klantportaal-agendas" -RecipientRestrictionFilter "MemberOfGroup -eq '<DN van de groep>'"
+    New-ManagementRoleAssignment -App <client-id> -Role "Application Calendars.ReadWrite" -CustomResourceScope "Klantportaal-agendas"
+    New-ManagementRoleAssignment -App <client-id> -Role "Application MailboxSettings.ReadWrite" -CustomResourceScope "Klantportaal-agendas"
+    ```
+    Haal daarna de tenant-brede Graph-toestemmingen uit stap 2 weer weg, zodat alleen de beperkte Exchange-rol overblijft. Zonder deze stap kan de app bij **alle** mailboxen in de organisatie.
+5.  **Omgevingsvariabelen** (lokaal in `.env`, op Railway in beide services):
+    ```
+    CALENDAR_DRIVER=graph
+    CALENDAR_OVERVIEW_MAILBOX=info@gkr.nl
+    MICROSOFT_TENANT_ID=...
+    MICROSOFT_CLIENT_ID=...
+    MICROSOFT_CLIENT_SECRET=...
+    ```
+6.  **Controleren:** `php artisan calendar:check`. Dit laat per medewerker zien of de koppeling bij de agenda kan. Het e-mailadres van een admin in het platform moet gelijk zijn aan het Microsoft 365-adres.
+
+### Lokaal en in tests
+*   Standaard is `CALENDAR_DRIVER=fake`: er wordt nooit een echte agenda aangeroepen. Tests gebruiken `FakeCalendarProvider` en `Http::fake()`.
+*   Draai `php artisan queue:work` (of `composer dev`) om de sync lokaal te zien werken.
+*   Testgegevens: `php artisan db:seed --class=AppointmentDemoSeeder`.
+
+### API (mobiele app, `auth:sanctum`)
+| Methode | Pad | Toegang | Doel |
+|---|---|---|---|
+| `GET` | `/api/appointments` | klant | eigen afspraken |
+| `GET` | `/api/appointments/{id}` | klant (eigen) / admin | één afspraak (vreemd id → 404) |
+| `POST` | `/api/appointments` | klant | moment aanvragen (`type`, `location`, `project_id`, `title`, `description`, `employee_ids[1-2]`, `start_time`) |
+| `POST` | `/api/appointments/{id}/confirm-option` | klant | voorgesteld moment kiezen (`option_id`) |
+| `POST` | `/api/appointments/{id}/alternative` | klant | zelf een ander moment kiezen (`start_time`) |
+| `POST` | `/api/appointments/{id}/cancel` | klant | annuleren |
+| `GET` | `/api/availability` | ingelogd | vrije blokken (`employee_ids[]`, `from`, `to`; admin ook `duration_minutes`, `travel_minutes`) |
+| `GET` | `/api/employees` | ingelogd | GKR-medewerkers met agendakleur |
+| `GET` | `/api/projects` | klant | eigen projecten |
+| `POST` | `/api/callback-requests` | klant | belverzoek (`phone`, `note`, `project_id`) |
+| `GET` | `/api/contact` | ingelogd | telefoonnummer en "Nu beschikbaar" |
+| `GET` | `/api/admin/appointments` | admin | alle of eigen afspraken (`scope=mine\|all`, `from`, `to`) |
+| `POST` | `/api/admin/appointments` | admin | voorstel met 1–3 `options` |
+| `POST` | `/api/admin/appointments/{id}/approve` · `/reject` | admin | definitief bevestigen / afwijzen |
+| `GET` | `/api/admin/availability` | admin | status per medewerker per moment, met waarschuwingen |
+| `GET` | `/api/admin/clients` · `/api/admin/clients/{id}/projects` | admin | klanten en hun projecten |
+| `PATCH` | `/api/admin/employees/{id}` | admin | agendakleur (`calendar_color`, Outlook-preset) |
+| `GET`/`PATCH` | `/api/admin/callback-requests[/{id}]` | admin | belverzoeken |
+| `GET`/`POST`/`DELETE` | `/api/admin/closed-days[/{id}]` | admin | dagen waarop GKR gesloten is |
+| `PATCH` | `/api/me/preferences` | admin | `agenda_scope` (`mine`/`all`), dezelfde keuze als het vinkje op de website |
+
+Fouten uit het afsprakendomein komen terug als `{"status": "error", "message": "..."}` (409 bij een bezet moment, 422 bij een ongeldige stap), altijd in gewone taal.
+
+### Wat er met deze wijziging ook is opgelost
+*   De `.ics`-download stond buiten de login en was voor elke afspraak op id op te vragen; nu alleen voor de klant zelf en admins.
+*   Bevestigen of een alternatief kiezen controleerde niet of de afspraak van de klant was.
+*   Een klant kon een afspraak aanvragen op het project van een andere klant.
+*   `.ics`-tijden gebruikten de maand in plaats van de seconden en waren niet naar UTC omgezet.
+*   Het vaste sandbox-e-mailadres in de admin-controller is vervangen door `APPOINTMENT_MAIL_ENABLED` / `APPOINTMENT_MAIL_ONLY_TO` (standaard: geen mail).
 
